@@ -1,0 +1,1172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Audio Transcriber</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #faf8f5;
+      --surface: #ffffff;
+      --surface-2: #f3f0ec;
+      --border: #e8e2da;
+      --text: #3d3229;
+      --text-dim: #9a8e82;
+      --accent: #f28b5e;
+      --accent-hover: #e07548;
+      --accent-light: #fff1eb;
+      --danger: #e85d5d;
+      --success: #5dbd72;
+      --purple: #a78bfa;
+      --radius: 16px;
+      --radius-sm: 10px;
+      --shadow-sm: 0 1px 3px rgba(61, 50, 41, 0.06);
+      --shadow-md: 0 4px 12px rgba(61, 50, 41, 0.08);
+      --shadow-lg: 0 8px 30px rgba(61, 50, 41, 0.1);
+    }
+
+    body {
+      font-family: 'Nunito', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      line-height: 1.6;
+    }
+
+    .container {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 2.5rem 1.5rem;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 2.5rem;
+    }
+    header h1 {
+      font-size: 1.85rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      color: var(--text);
+    }
+    header h1 .header-emoji {
+      display: inline-block;
+      margin-right: 0.25rem;
+    }
+    header p {
+      color: var(--text-dim);
+      margin-top: 0.35rem;
+      font-size: 0.95rem;
+      font-weight: 400;
+    }
+
+    /* --- Tabs --- */
+    .tabs {
+      display: flex;
+      gap: 0.5rem;
+      margin-bottom: 1.5rem;
+      background: var(--surface-2);
+      padding: 0.3rem;
+      border-radius: var(--radius);
+    }
+    .tab-btn {
+      flex: 1;
+      padding: 0.6rem;
+      background: transparent;
+      border: none;
+      border-radius: var(--radius-sm);
+      color: var(--text-dim);
+      font-family: inherit;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.25s;
+    }
+    .tab-btn:hover { color: var(--text); }
+    .tab-btn.active {
+      background: var(--surface);
+      color: var(--accent);
+      box-shadow: var(--shadow-sm);
+    }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+
+    /* --- Drop zone --- */
+    .dropzone {
+      border: 2px dashed var(--border);
+      border-radius: var(--radius);
+      padding: 3rem 1.5rem;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.25s;
+      background: var(--surface);
+      box-shadow: var(--shadow-sm);
+    }
+    .dropzone:hover, .dropzone.dragover {
+      border-color: var(--accent);
+      background: var(--accent-light);
+      box-shadow: var(--shadow-md);
+    }
+    .dropzone.dragover {
+      transform: scale(1.01);
+    }
+    .dropzone-icon {
+      font-size: 2.75rem;
+      margin-bottom: 0.75rem;
+    }
+    .dropzone p { color: var(--text-dim); font-size: 0.9rem; }
+    .dropzone .browse {
+      color: var(--accent);
+      text-decoration: underline;
+      cursor: pointer;
+      font-weight: 600;
+    }
+    .file-info {
+      margin-top: 1rem;
+      padding: 0.6rem 1rem;
+      background: var(--accent-light);
+      border: 1px solid #f5d5c5;
+      border-radius: var(--radius-sm);
+      font-size: 0.85rem;
+      display: none;
+      align-items: center;
+      justify-content: space-between;
+      font-weight: 600;
+      color: var(--accent-hover);
+    }
+    .file-info.visible { display: flex; }
+    .file-info .remove {
+      color: var(--danger);
+      cursor: pointer;
+      background: none;
+      border: none;
+      font-size: 1.2rem;
+      font-weight: 700;
+    }
+
+    /* --- Recording --- */
+    .recorder {
+      text-align: center;
+      padding: 2.5rem 2rem;
+      background: var(--surface);
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow-sm);
+    }
+    .rec-btn {
+      width: 84px;
+      height: 84px;
+      border-radius: 50%;
+      border: 3px solid var(--danger);
+      background: var(--surface);
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.2s;
+      position: relative;
+      box-shadow: 0 2px 12px rgba(232, 93, 93, 0.15);
+    }
+    .rec-btn:hover {
+      box-shadow: 0 4px 20px rgba(232, 93, 93, 0.25);
+    }
+    .rec-btn::after {
+      content: '';
+      width: 32px;
+      height: 32px;
+      background: var(--danger);
+      border-radius: 50%;
+      transition: all 0.2s;
+    }
+    .rec-btn.recording::after {
+      border-radius: 4px;
+      width: 24px;
+      height: 24px;
+    }
+    .rec-btn.recording {
+      animation: pulse-ring 1.5s ease-out infinite;
+    }
+    @keyframes pulse-ring {
+      0% { box-shadow: 0 0 0 0 rgba(232, 93, 93, 0.35); }
+      70% { box-shadow: 0 0 0 22px rgba(232, 93, 93, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(232, 93, 93, 0); }
+    }
+    .rec-timer {
+      margin-top: 1rem;
+      font-variant-numeric: tabular-nums;
+      font-size: 1.5rem;
+      font-weight: 700;
+      color: var(--text-dim);
+    }
+    .rec-timer.active { color: var(--danger); }
+    .rec-hint {
+      margin-top: 0.75rem;
+      font-size: 0.85rem;
+      color: var(--text-dim);
+    }
+
+    /* --- Waveform visualization --- */
+    .waveform {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 3px;
+      height: 40px;
+      margin-top: 1rem;
+    }
+    .waveform .bar {
+      width: 4px;
+      background: var(--accent);
+      border-radius: 2px;
+      height: 8px;
+      transition: height 0.1s;
+    }
+
+    /* --- Options --- */
+    .options {
+      display: flex;
+      gap: 0.75rem;
+      margin-top: 1.25rem;
+      flex-wrap: wrap;
+    }
+    .options label {
+      font-size: 0.8rem;
+      color: var(--text-dim);
+      font-weight: 600;
+      display: block;
+      margin-bottom: 0.3rem;
+    }
+    .options select, .options input[type="text"] {
+      background: var(--surface);
+      border: 1.5px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text);
+      padding: 0.55rem 0.85rem;
+      font-family: inherit;
+      font-size: 0.85rem;
+      min-width: 160px;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    .options select:focus, .options input:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(242, 139, 94, 0.15);
+    }
+
+    /* --- Transcribe button --- */
+    .transcribe-btn {
+      width: 100%;
+      margin-top: 1.5rem;
+      padding: 0.9rem;
+      background: linear-gradient(135deg, var(--accent) 0%, #e97b4a 100%);
+      color: #fff;
+      border: none;
+      border-radius: var(--radius-sm);
+      font-family: inherit;
+      font-size: 1rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.25s;
+      box-shadow: 0 3px 12px rgba(242, 139, 94, 0.3);
+      letter-spacing: 0.01em;
+    }
+    .transcribe-btn:hover:not(:disabled) {
+      background: linear-gradient(135deg, var(--accent-hover) 0%, #d36a3c 100%);
+      box-shadow: 0 5px 20px rgba(242, 139, 94, 0.4);
+      transform: translateY(-1px);
+    }
+    .transcribe-btn:active:not(:disabled) {
+      transform: translateY(0);
+    }
+    .transcribe-btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+      box-shadow: none;
+    }
+
+    /* --- Progress --- */
+    .progress-wrap {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem;
+      gap: 0.75rem;
+    }
+    .progress-wrap.visible { display: flex; }
+    .progress-bar-outer {
+      width: 100%;
+      height: 10px;
+      background: var(--surface-2);
+      border-radius: 5px;
+      overflow: hidden;
+    }
+    .progress-bar-inner {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, var(--accent), var(--purple));
+      border-radius: 5px;
+      transition: width 0.3s ease;
+    }
+    .progress-bar-inner.indeterminate {
+      width: 30%;
+      animation: indeterminate 1.5s ease-in-out infinite;
+    }
+    @keyframes indeterminate {
+      0% { transform: translateX(-100%); }
+      100% { transform: translateX(400%); }
+    }
+    .progress-percent {
+      font-size: 2rem;
+      font-weight: 800;
+      font-variant-numeric: tabular-nums;
+      color: var(--accent);
+    }
+    .progress-phase {
+      font-size: 0.85rem;
+      color: var(--text-dim);
+      text-align: center;
+      font-weight: 600;
+    }
+
+    /* --- Output --- */
+    .output {
+      display: none;
+      margin-top: 2rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      box-shadow: var(--shadow-md);
+    }
+    .output.visible { display: block; }
+    .output-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.85rem 1.1rem;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface-2);
+    }
+    .output-header h3 { font-size: 0.9rem; font-weight: 700; }
+    .output-actions { display: flex; gap: 0.5rem; }
+    .output-actions button {
+      background: var(--surface);
+      border: 1.5px solid var(--border);
+      color: var(--text-dim);
+      padding: 0.35rem 0.8rem;
+      border-radius: 8px;
+      font-family: inherit;
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .output-actions button:hover {
+      color: var(--accent);
+      border-color: var(--accent);
+      background: var(--accent-light);
+    }
+    .output-text {
+      padding: 1.25rem;
+      white-space: pre-wrap;
+      font-size: 0.95rem;
+      line-height: 1.75;
+      max-height: 400px;
+      overflow-y: auto;
+    }
+    .output-meta {
+      padding: 0.6rem 1.1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--text-dim);
+      font-weight: 600;
+      display: none;
+      background: var(--surface-2);
+    }
+    .output-meta.visible { display: block; }
+
+    /* --- History --- */
+    .history {
+      margin-top: 2.5rem;
+      border-top: 2px solid var(--border);
+      padding-top: 1.5rem;
+    }
+    .history h3 {
+      font-size: 1rem;
+      font-weight: 700;
+      margin-bottom: 1rem;
+      color: var(--text-dim);
+    }
+    .history-empty {
+      color: var(--text-dim);
+      font-size: 0.85rem;
+      font-style: italic;
+    }
+    .history-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+    .history-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      padding: 0.75rem 1rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      font-size: 0.85rem;
+      box-shadow: var(--shadow-sm);
+      transition: box-shadow 0.2s;
+    }
+    .history-item:hover {
+      box-shadow: var(--shadow-md);
+    }
+    .history-item-info {
+      flex: 1;
+      min-width: 0;
+    }
+    .history-item-name {
+      font-weight: 700;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .history-item-meta {
+      color: var(--text-dim);
+      font-size: 0.75rem;
+      margin-top: 0.15rem;
+    }
+    .history-item-preview {
+      color: var(--text-dim);
+      font-size: 0.75rem;
+      margin-top: 0.25rem;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .history-item-actions {
+      display: flex;
+      gap: 0.35rem;
+      flex-shrink: 0;
+    }
+    .history-item-actions button {
+      background: var(--surface);
+      border: 1.5px solid var(--border);
+      color: var(--text-dim);
+      padding: 0.3rem 0.65rem;
+      border-radius: 8px;
+      font-family: inherit;
+      font-size: 0.75rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s;
+      white-space: nowrap;
+    }
+    .history-item-actions button:hover {
+      color: var(--accent);
+      border-color: var(--accent);
+      background: var(--accent-light);
+    }
+    .history-item-actions .delete-btn:hover {
+      color: var(--danger);
+      border-color: var(--danger);
+      background: #fef1f1;
+    }
+
+    /* --- Toast --- */
+    .toast-container {
+      position: fixed;
+      top: 1.5rem;
+      right: 1.5rem;
+      z-index: 1000;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+    .toast {
+      padding: 0.75rem 1.25rem;
+      border-radius: var(--radius-sm);
+      font-family: inherit;
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: #fff;
+      animation: toast-in 0.3s ease-out;
+      max-width: 340px;
+      box-shadow: var(--shadow-lg);
+    }
+    .toast.success { background: var(--success); }
+    .toast.error { background: var(--danger); }
+    @keyframes toast-in {
+      from { opacity: 0; transform: translateY(-10px) scale(0.95); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
+    }
+
+    /* --- Responsive --- */
+    @media (max-width: 520px) {
+      .container { padding: 1.5rem 1rem; }
+      header h1 { font-size: 1.5rem; }
+      .options { flex-direction: column; }
+      .options select, .options input[type="text"] { width: 100%; min-width: unset; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1><span class="header-emoji">&#127911;</span> Audio Transcriber</h1>
+      <p>Drop in an audio file or hit record — we'll do the rest!</p>
+    </header>
+
+    <!-- Tabs -->
+    <div class="tabs">
+      <button class="tab-btn active" data-tab="upload">Upload File</button>
+      <button class="tab-btn" data-tab="record">Record Audio</button>
+    </div>
+
+    <!-- Upload panel -->
+    <div id="tab-upload" class="tab-panel active">
+      <div class="dropzone" id="dropzone">
+        <div class="dropzone-icon">&#127908;</div>
+        <p>Drag & drop an audio file here, or <span class="browse">browse</span></p>
+        <p style="margin-top:0.4rem; font-size:0.8rem;">MP3, WAV, M4A, WebM, MP4 &mdash; large files auto-compressed &amp; chunked</p>
+        <input type="file" id="fileInput" accept=".mp3,.wav,.m4a,.webm,.mp4,audio/*" hidden>
+      </div>
+      <div class="file-info" id="fileInfo">
+        <span id="fileName"></span>
+        <button class="remove" id="removeFile" title="Remove file">&times;</button>
+      </div>
+    </div>
+
+    <!-- Record panel -->
+    <div id="tab-record" class="tab-panel">
+      <div class="recorder">
+        <button class="rec-btn" id="recBtn" title="Start recording"></button>
+        <div class="rec-timer" id="recTimer">00:00</div>
+        <div class="waveform" id="waveform"></div>
+        <p class="rec-hint" id="recHint">Click to start recording</p>
+      </div>
+    </div>
+
+    <!-- Options -->
+    <div class="options">
+      <div>
+        <label for="langSelect">Language</label>
+        <select id="langSelect">
+          <option value="">Auto-detect</option>
+          <option value="en">English</option>
+          <option value="es">Spanish</option>
+          <option value="fr">French</option>
+          <option value="de">German</option>
+          <option value="it">Italian</option>
+          <option value="pt">Portuguese</option>
+          <option value="nl">Dutch</option>
+          <option value="ja">Japanese</option>
+          <option value="ko">Korean</option>
+          <option value="zh">Chinese</option>
+          <option value="ar">Arabic</option>
+          <option value="hi">Hindi</option>
+          <option value="ru">Russian</option>
+          <option value="pl">Polish</option>
+          <option value="tr">Turkish</option>
+          <option value="sv">Swedish</option>
+          <option value="uk">Ukrainian</option>
+        </select>
+      </div>
+      <div style="flex:1">
+        <label for="promptInput">Context prompt (optional)</label>
+        <input type="text" id="promptInput" placeholder="e.g. names, jargon, topic" style="width:100%">
+      </div>
+    </div>
+
+    <!-- Transcribe button -->
+    <button class="transcribe-btn" id="transcribeBtn" disabled>Transcribe</button>
+
+    <!-- Progress -->
+    <div class="progress-wrap" id="progressWrap">
+      <div class="progress-percent" id="progressPct">0%</div>
+      <div class="progress-bar-outer">
+        <div class="progress-bar-inner" id="progressBar"></div>
+      </div>
+      <div class="progress-phase" id="progressPhase">Preparing...</div>
+    </div>
+
+    <!-- Output -->
+    <div class="output" id="output">
+      <div class="output-header">
+        <h3>Transcription</h3>
+        <div class="output-actions">
+          <button id="copyBtn">Copy</button>
+          <button id="dlTxt">Download .txt</button>
+          <button id="dlSrt">Download .srt</button>
+        </div>
+      </div>
+      <div class="output-text" id="outputText"></div>
+      <div class="output-meta" id="outputMeta"></div>
+    </div>
+
+    <!-- History -->
+    <div class="history" id="historySection">
+      <h3>Recent Transcriptions</h3>
+      <div id="historyList"><p class="history-empty">No transcriptions yet</p></div>
+    </div>
+  </div>
+
+  <div class="toast-container" id="toasts"></div>
+
+  <script>
+    // --- DOM refs ---
+    const $ = (s) => document.querySelector(s);
+    const dropzone = $("#dropzone");
+    const fileInput = $("#fileInput");
+    const fileInfo = $("#fileInfo");
+    const fileName = $("#fileName");
+    const removeFileBtn = $("#removeFile");
+    const recBtn = $("#recBtn");
+    const recTimer = $("#recTimer");
+    const recHint = $("#recHint");
+    const waveformEl = $("#waveform");
+    const langSelect = $("#langSelect");
+    const promptInput = $("#promptInput");
+    const transcribeBtn = $("#transcribeBtn");
+    const progressWrap = $("#progressWrap");
+    const progressPct = $("#progressPct");
+    const progressBar = $("#progressBar");
+    const progressPhase = $("#progressPhase");
+    const output = $("#output");
+    const outputText = $("#outputText");
+    const outputMeta = $("#outputMeta");
+    const copyBtn = $("#copyBtn");
+    const dlTxtBtn = $("#dlTxt");
+    const dlSrtBtn = $("#dlSrt");
+    const toasts = $("#toasts");
+
+    let selectedFile = null;
+    let recordedBlob = null;
+    let mediaRecorder = null;
+    let recordingChunks = [];
+    let timerInterval = null;
+    let recordSeconds = 0;
+    let audioContext = null;
+    let analyser = null;
+    let verboseData = null;
+
+    // --- Progress UI helpers ---
+    function showProgress() {
+      progressWrap.classList.add("visible");
+      progressBar.classList.remove("indeterminate");
+      setProgress(0, "Preparing...");
+    }
+    function hideProgress() {
+      progressWrap.classList.remove("visible");
+    }
+    function setProgress(pct, message) {
+      progressPct.textContent = pct >= 0 ? `${pct}%` : "";
+      progressBar.style.width = pct >= 0 ? `${pct}%` : "";
+      if (pct < 0) {
+        progressBar.classList.add("indeterminate");
+      } else {
+        progressBar.classList.remove("indeterminate");
+      }
+      if (message) progressPhase.textContent = message;
+    }
+
+    // --- Tabs ---
+    document.querySelectorAll(".tab-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
+        document.querySelectorAll(".tab-panel").forEach((p) => p.classList.remove("active"));
+        btn.classList.add("active");
+        $(`#tab-${btn.dataset.tab}`).classList.add("active");
+        updateTranscribeBtn();
+      });
+    });
+
+    // --- Toast ---
+    function toast(msg, type = "success") {
+      const el = document.createElement("div");
+      el.className = `toast ${type}`;
+      el.textContent = msg;
+      toasts.appendChild(el);
+      setTimeout(() => { el.remove(); }, 3500);
+    }
+
+    // --- Drag & Drop ---
+    dropzone.addEventListener("click", () => fileInput.click());
+    dropzone.addEventListener("dragover", (e) => { e.preventDefault(); dropzone.classList.add("dragover"); });
+    dropzone.addEventListener("dragleave", () => dropzone.classList.remove("dragover"));
+    dropzone.addEventListener("drop", (e) => {
+      e.preventDefault();
+      dropzone.classList.remove("dragover");
+      const file = e.dataTransfer.files[0];
+      if (file) selectFile(file);
+    });
+    fileInput.addEventListener("change", () => {
+      if (fileInput.files[0]) selectFile(fileInput.files[0]);
+    });
+
+    function selectFile(file) {
+      const maxSize = 1024 * 1024 * 1024;
+      if (file.size > maxSize) {
+        toast("File exceeds 1 GB limit.", "error");
+        return;
+      }
+      const allowed = ["audio/mpeg","audio/mp3","audio/wav","audio/wave","audio/x-wav","audio/m4a","audio/x-m4a","audio/mp4","audio/webm","video/mp4","video/webm"];
+      if (!allowed.includes(file.type) && !file.name.match(/\.(mp3|wav|m4a|webm|mp4)$/i)) {
+        toast("Unsupported file format.", "error");
+        return;
+      }
+      selectedFile = file;
+      recordedBlob = null;
+      const sizeMB = (file.size / (1024 * 1024)).toFixed(1);
+      fileName.textContent = `${file.name} (${sizeMB} MB)`;
+      fileInfo.classList.add("visible");
+      updateTranscribeBtn();
+    }
+
+    removeFileBtn.addEventListener("click", () => {
+      selectedFile = null;
+      fileInput.value = "";
+      fileInfo.classList.remove("visible");
+      updateTranscribeBtn();
+    });
+
+    // --- Recording ---
+    const NUM_BARS = 32;
+    for (let i = 0; i < NUM_BARS; i++) {
+      const bar = document.createElement("div");
+      bar.className = "bar";
+      waveformEl.appendChild(bar);
+    }
+    const bars = waveformEl.querySelectorAll(".bar");
+
+    recBtn.addEventListener("click", async () => {
+      if (mediaRecorder && mediaRecorder.state === "recording") {
+        stopRecording();
+      } else {
+        await startRecording();
+      }
+    });
+
+    async function startRecording() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        recordingChunks = [];
+        mediaRecorder = new MediaRecorder(stream, { mimeType: getSupportedMime() });
+
+        mediaRecorder.ondataavailable = (e) => {
+          if (e.data.size > 0) recordingChunks.push(e.data);
+        };
+
+        mediaRecorder.onstop = () => {
+          stream.getTracks().forEach((t) => t.stop());
+          recordedBlob = new Blob(recordingChunks, { type: mediaRecorder.mimeType });
+          selectedFile = null;
+          fileInfo.classList.remove("visible");
+          recHint.textContent = `Recording saved (${(recordedBlob.size / (1024 * 1024)).toFixed(1)} MB) — click Transcribe`;
+          updateTranscribeBtn();
+          cancelAnimationFrame(animFrameId);
+          bars.forEach((b) => (b.style.height = "8px"));
+        };
+
+        mediaRecorder.start(250);
+        recBtn.classList.add("recording");
+        recHint.textContent = "Recording… click to stop";
+        recordSeconds = 0;
+        updateTimerDisplay();
+        recTimer.classList.add("active");
+        timerInterval = setInterval(() => { recordSeconds++; updateTimerDisplay(); }, 1000);
+
+        audioContext = new AudioContext();
+        const source = audioContext.createMediaStreamSource(stream);
+        analyser = audioContext.createAnalyser();
+        analyser.fftSize = 128;
+        source.connect(analyser);
+        drawWaveform();
+      } catch (err) {
+        toast("Microphone access denied.", "error");
+      }
+    }
+
+    function stopRecording() {
+      if (mediaRecorder && mediaRecorder.state === "recording") {
+        mediaRecorder.stop();
+      }
+      clearInterval(timerInterval);
+      recBtn.classList.remove("recording");
+      recTimer.classList.remove("active");
+      if (audioContext) { audioContext.close(); audioContext = null; }
+    }
+
+    let animFrameId;
+    function drawWaveform() {
+      if (!analyser) return;
+      const data = new Uint8Array(analyser.frequencyBinCount);
+      analyser.getByteFrequencyData(data);
+      const step = Math.floor(data.length / NUM_BARS);
+      for (let i = 0; i < NUM_BARS; i++) {
+        const val = data[i * step] || 0;
+        const h = Math.max(4, (val / 255) * 36);
+        bars[i].style.height = h + "px";
+      }
+      animFrameId = requestAnimationFrame(drawWaveform);
+    }
+
+    function updateTimerDisplay() {
+      const m = String(Math.floor(recordSeconds / 60)).padStart(2, "0");
+      const s = String(recordSeconds % 60).padStart(2, "0");
+      recTimer.textContent = `${m}:${s}`;
+    }
+
+    function getSupportedMime() {
+      const types = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus"];
+      for (const t of types) {
+        if (MediaRecorder.isTypeSupported(t)) return t;
+      }
+      return "";
+    }
+
+    // --- Transcribe ---
+    function updateTranscribeBtn() {
+      const hasSource = selectedFile || recordedBlob;
+      transcribeBtn.disabled = !hasSource;
+    }
+
+    function buildFormData(audioSource, lang, prompt) {
+      const fd = new FormData();
+      if (audioSource instanceof Blob && !(audioSource instanceof File)) {
+        const ext = (mediaRecorder?.mimeType || "").includes("ogg") ? "ogg" : "webm";
+        fd.append("audio", audioSource, `recording.${ext}`);
+      } else {
+        fd.append("audio", audioSource);
+      }
+      if (lang) fd.append("language", lang);
+      if (prompt) fd.append("prompt", prompt);
+      return fd;
+    }
+
+    // --- XHR upload with progress, then read NDJSON stream ---
+    function uploadWithProgress(url, formData) {
+      return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", url);
+        xhr.responseType = "text";
+
+        // Track upload progress
+        xhr.upload.addEventListener("progress", (e) => {
+          if (e.lengthComputable) {
+            const pct = Math.round((e.loaded / e.total) * 100);
+            setProgress(pct, `Uploading... ${pct}%`);
+          }
+        });
+
+        xhr.upload.addEventListener("load", () => {
+          setProgress(-1, "Processing on server...");
+        });
+
+        xhr.addEventListener("load", () => {
+          resolve(xhr.responseText);
+        });
+
+        xhr.addEventListener("error", () => reject(new Error("Network error")));
+        xhr.addEventListener("abort", () => reject(new Error("Upload aborted")));
+
+        xhr.send(formData);
+      });
+    }
+
+    // --- Stream NDJSON with progress using fetch ---
+    async function streamTranscribe(url, formData) {
+      // Phase 1: Upload with XHR for upload %, get response text
+      // But XHR doesn't support streaming response reading.
+      // So: use XHR for upload tracking, then parse NDJSON from complete response.
+      // For real streaming during server processing, use fetch + ReadableStream.
+
+      // We'll do a two-step approach:
+      // 1. Track upload via XHR progress
+      // 2. Read server processing progress via fetch streaming
+
+      // Actually, we need both upload progress AND streaming response.
+      // fetch supports ReadableStream but NOT upload progress.
+      // XHR supports upload progress but NOT streaming response.
+      // Solution: Use XHR for upload %, switch to polling-free wait.
+      // But we can't have both in one request.
+
+      // Best compromise: use fetch with ReadableStream for everything.
+      // Upload % won't be exact, but we can show file size and estimate.
+      // OR: just use XHR and parse NDJSON from complete response (no live server progress).
+
+      // Actually the best approach: Use fetch for streaming.
+      // Show upload phase based on timing estimate, then real server progress.
+      // For large files, the upload phase is the slowest anyway.
+
+      // Let's use a hybrid: XHR for upload, then fetch for the verbose (parallel).
+      // Simpler: just use fetch + ReadableStream and show indeterminate during upload.
+
+      // FINAL APPROACH: Use XMLHttpRequest with readyState 3 (partial response) for NDJSON.
+      return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", url);
+        let processedLength = 0;
+        let lastResult = null;
+        let lastError = null;
+
+        xhr.upload.addEventListener("progress", (e) => {
+          if (e.lengthComputable) {
+            const pct = Math.round((e.loaded / e.total) * 100);
+            setProgress(pct, `Uploading... ${pct}%`);
+          }
+        });
+
+        xhr.upload.addEventListener("load", () => {
+          setProgress(-1, "Server received file, processing...");
+        });
+
+        // Parse NDJSON lines from response text
+        function parseNdjsonLines(text) {
+          const lines = text.split("\n").filter(Boolean);
+          for (const line of lines) {
+            try {
+              const evt = JSON.parse(line);
+              if (evt.phase === "done") {
+                lastResult = evt.result;
+              } else if (evt.phase === "error") {
+                lastError = evt.error;
+              } else if (evt.percent !== undefined) {
+                const label = phaseLabel(evt.phase);
+                setProgress(evt.percent, evt.message || `${label} ${evt.percent}%`);
+              } else if (evt.message) {
+                setProgress(-1, evt.message);
+              }
+            } catch {}
+          }
+        }
+
+        // Read partial response for NDJSON progress lines
+        xhr.onreadystatechange = () => {
+          if (xhr.readyState >= 3 && xhr.responseText) {
+            const newText = xhr.responseText.substring(processedLength);
+            processedLength = xhr.responseText.length;
+            if (newText) parseNdjsonLines(newText);
+          }
+
+          if (xhr.readyState === 4) {
+            // Final parse of full response in case we missed lines
+            if (!lastResult && !lastError) {
+              parseNdjsonLines(xhr.responseText);
+            }
+
+            if (lastError) {
+              reject(new Error(lastError));
+            } else if (lastResult) {
+              resolve(lastResult);
+            } else {
+              reject(new Error("No result received from server"));
+            }
+          }
+        };
+
+        xhr.addEventListener("error", () => reject(new Error("Network error")));
+        xhr.addEventListener("abort", () => reject(new Error("Upload aborted")));
+
+        xhr.send(formData);
+      });
+    }
+
+    function phaseLabel(phase) {
+      const labels = {
+        analyzing: "Analyzing",
+        compressing: "Compressing",
+        splitting: "Splitting",
+        transcribing: "Transcribing",
+      };
+      return labels[phase] || phase;
+    }
+
+    transcribeBtn.addEventListener("click", async () => {
+      const audioSource = selectedFile || recordedBlob;
+      if (!audioSource) return;
+
+      const lang = langSelect.value;
+      const prompt = promptInput.value.trim();
+
+      transcribeBtn.disabled = true;
+      output.classList.remove("visible");
+      outputMeta.classList.remove("visible");
+      verboseData = null;
+      showProgress();
+      setProgress(0, "Starting upload...");
+
+      try {
+        // Fire both requests: text + verbose (for SRT timestamps)
+        const textFd = buildFormData(audioSource, lang, prompt);
+        const verboseFd = buildFormData(audioSource, lang, prompt);
+
+        // Primary request with progress tracking
+        const textPromise = streamTranscribe("/api/transcribe", textFd);
+
+        // Verbose request in background (no progress UI, just for SRT data)
+        const verbosePromise = streamTranscribe("/api/transcribe-verbose", verboseFd)
+          .catch(() => null); // don't fail if verbose fails
+
+        const [textResult, verboseResult] = await Promise.all([textPromise, verbosePromise]);
+
+        outputText.textContent = textResult.text;
+
+        if (verboseResult) {
+          verboseData = verboseResult;
+          if (verboseData.language || verboseData.duration) {
+            const parts = [];
+            if (verboseData.language) parts.push(`Language: ${verboseData.language}`);
+            if (verboseData.duration) parts.push(`Duration: ${fmtDuration(verboseData.duration)}`);
+            if (verboseData.chunks > 1) parts.push(`Chunks: ${verboseData.chunks}`);
+            outputMeta.textContent = parts.join("  |  ");
+            outputMeta.classList.add("visible");
+          }
+        }
+
+        hideProgress();
+        output.classList.add("visible");
+        toast("Transcription complete!");
+        loadHistory();
+      } catch (err) {
+        hideProgress();
+        toast(err.message, "error");
+      } finally {
+        transcribeBtn.disabled = false;
+        updateTranscribeBtn();
+      }
+    });
+
+    function fmtDuration(s) {
+      const m = Math.floor(s / 60);
+      const sec = Math.floor(s % 60);
+      return `${m}m ${sec}s`;
+    }
+
+    // --- Copy ---
+    copyBtn.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(outputText.textContent);
+        toast("Copied to clipboard!");
+      } catch {
+        toast("Copy failed.", "error");
+      }
+    });
+
+    // --- Download TXT ---
+    dlTxtBtn.addEventListener("click", () => {
+      download("transcription.txt", outputText.textContent, "text/plain");
+    });
+
+    // --- Download SRT ---
+    dlSrtBtn.addEventListener("click", () => {
+      if (!verboseData?.segments?.length) {
+        toast("No timestamp data. Re-transcribe to generate SRT.", "error");
+        return;
+      }
+      const srt = verboseData.segments.map((seg, i) => {
+        return `${i + 1}\n${srtTime(seg.start)} --> ${srtTime(seg.end)}\n${seg.text.trim()}\n`;
+      }).join("\n");
+      download("transcription.srt", srt, "text/plain");
+    });
+
+    function srtTime(seconds) {
+      const h = String(Math.floor(seconds / 3600)).padStart(2, "0");
+      const m = String(Math.floor((seconds % 3600) / 60)).padStart(2, "0");
+      const s = String(Math.floor(seconds % 60)).padStart(2, "0");
+      const ms = String(Math.round((seconds % 1) * 1000)).padStart(3, "0");
+      return `${h}:${m}:${s},${ms}`;
+    }
+
+    function download(filename, content, mime) {
+      const blob = new Blob([content], { type: mime });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    }
+
+    // --- History ---
+    const historyList = $("#historyList");
+
+    async function loadHistory() {
+      try {
+        const res = await fetch("/api/history");
+        if (!res.ok) return;
+        const entries = await res.json();
+        renderHistory(entries);
+      } catch {}
+    }
+
+    function renderHistory(entries) {
+      if (!entries.length) {
+        historyList.innerHTML = '<p class="history-empty">No transcriptions yet</p>';
+        return;
+      }
+
+      historyList.innerHTML = entries.map((e) => {
+        const date = new Date(e.createdAt);
+        const timeStr = date.toLocaleDateString(undefined, { month: "short", day: "numeric" })
+          + " " + date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+        const preview = (e.text || "").slice(0, 80).replace(/\n/g, " ");
+        return `
+          <div class="history-item" data-id="${e.id}">
+            <div class="history-item-info">
+              <div class="history-item-name">${escHtml(e.sourceFile || e.filename)}</div>
+              <div class="history-item-meta">${timeStr}${e.language && e.language !== "auto" ? " · " + e.language : ""}${e.chunks > 1 ? " · " + e.chunks + " chunks" : ""}</div>
+              <div class="history-item-preview">${escHtml(preview)}${preview.length >= 80 ? "..." : ""}</div>
+            </div>
+            <div class="history-item-actions">
+              <button onclick="downloadHistory('${e.id}')">Download .txt</button>
+              <button onclick="viewHistory(this)" data-text="${escAttr(e.text)}">View</button>
+              <button class="delete-btn" onclick="deleteHistory('${e.id}')">Delete</button>
+            </div>
+          </div>`;
+      }).join("");
+    }
+
+    function escHtml(s) {
+      const d = document.createElement("div");
+      d.textContent = s;
+      return d.innerHTML;
+    }
+
+    function escAttr(s) {
+      return (s || "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+
+    function downloadHistory(id) {
+      window.open(`/api/history/${id}/download`, "_blank");
+    }
+
+    function viewHistory(btn) {
+      const text = btn.dataset.text;
+      outputText.textContent = text;
+      outputMeta.classList.remove("visible");
+      output.classList.add("visible");
+      output.scrollIntoView({ behavior: "smooth" });
+      verboseData = null; // no SRT data for history items
+    }
+
+    async function deleteHistory(id) {
+      try {
+        await fetch(`/api/history/${id}`, { method: "DELETE" });
+        loadHistory();
+        toast("Removed from history");
+      } catch {
+        toast("Failed to delete", "error");
+      }
+    }
+
+    // Load history on page load
+    loadHistory();
+  </script>
+</body>
+</html>
