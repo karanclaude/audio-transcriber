@@ -76,21 +76,14 @@ app.delete("/api/history/:id", (req, res) => {
   res.json({ ok: true });
 });
 
-const ALLOWED_MIMES = [
-  "audio/mpeg", "audio/mp3", "audio/wav", "audio/wave", "audio/x-wav",
-  "audio/m4a", "audio/x-m4a", "audio/mp4", "audio/webm",
-  "audio/flac", "audio/x-flac", "audio/ogg", "audio/oga",
-  "video/mp4", "video/webm", "video/ogg",
-];
-
 const upload = multer({
   dest: path.join(__dirname, "tmp"),
   limits: { fileSize: 1024 * 1024 * 1024 },
   fileFilter(req, file, cb) {
-    if (ALLOWED_MIMES.includes(file.mimetype)) {
+    if (file.mimetype.startsWith("audio/") || file.mimetype.startsWith("video/")) {
       cb(null, true);
     } else {
-      cb(new Error(`Unsupported file type: ${file.mimetype}. Accepted: mp3, wav, m4a, webm, mp4.`));
+      cb(new Error(`Unsupported file type: ${file.mimetype}. Please upload an audio or video file.`));
     }
   },
 });
@@ -123,6 +116,25 @@ async function getAudioDuration(filePath) {
   ]);
   const info = JSON.parse(stdout);
   return parseFloat(info.format.duration) || 0;
+}
+
+// --- Convert any audio/video to mp3 via ffmpeg ---
+function convertToMp3(inputPath) {
+  return new Promise((resolve, reject) => {
+    const outputPath = inputPath + "_converted.mp3";
+    const args = [
+      "-y", "-i", inputPath,
+      "-vn", "-ac", "1", "-ar", "16000", "-b:a", "64k",
+      "-f", "mp3",
+      outputPath,
+    ];
+    const proc = spawn("ffmpeg", args, { stdio: ["pipe", "pipe", "pipe"] });
+    proc.on("close", (code) => {
+      if (code === 0) resolve(outputPath);
+      else reject(new Error(`ffmpeg convert exited with code ${code}`));
+    });
+    proc.on("error", reject);
+  });
 }
 
 // --- Compress audio with progress callback ---
@@ -209,35 +221,11 @@ function splitAudio(inputPath, totalDuration, onProgress, chunkSeconds = 600) {
   });
 }
 
-// --- Transcribe a single file ---
-const MIME_TO_EXT = {
-  "audio/mpeg": ".mp3", "audio/mp3": ".mp3", "audio/wav": ".wav",
-  "audio/wave": ".wav", "audio/x-wav": ".wav", "audio/m4a": ".m4a",
-  "audio/x-m4a": ".m4a", "audio/mp4": ".mp4", "audio/webm": ".webm",
-  "audio/flac": ".flac", "audio/x-flac": ".flac", "audio/ogg": ".ogg",
-  "audio/oga": ".oga", "video/mp4": ".mp4", "video/webm": ".webm",
-  "video/ogg": ".ogg",
-};
-
-function resolveAudioExt(filePath, originalName, mimetype) {
-  // Try original filename extension first
-  if (originalName) {
-    const ext = path.extname(originalName).toLowerCase();
-    if ([".mp3", ".wav", ".m4a", ".mp4", ".webm", ".flac", ".ogg", ".oga", ".mpeg", ".mpga"].includes(ext)) return ext;
-  }
-  // Fall back to mimetype
-  if (mimetype && MIME_TO_EXT[mimetype]) return MIME_TO_EXT[mimetype];
-  // Fall back to file path extension
-  const ext = path.extname(filePath).toLowerCase();
-  if ([".mp3", ".wav", ".m4a", ".mp4", ".webm", ".flac", ".ogg", ".oga", ".mpeg", ".mpga"].includes(ext)) return ext;
-  return ".mp3";
-}
-
-async function transcribeFile(filePath, format, language, prompt, originalName, mimetype) {
-  const ext = resolveAudioExt(filePath, originalName, mimetype);
+// --- Transcribe a single file (always mp3 after conversion) ---
+async function transcribeFile(filePath, format, language, prompt) {
   const params = {
     model: "whisper-1",
-    file: await OpenAI.toFile(fs.createReadStream(filePath), "audio" + ext),
+    file: await OpenAI.toFile(fs.createReadStream(filePath), "audio.mp3"),
     response_format: format,
   };
   if (language) params.language = language;
@@ -247,24 +235,29 @@ async function transcribeFile(filePath, format, language, prompt, originalName, 
 
 // --- Prepare audio: compress/split with streamed progress ---
 async function prepareAudio(tmpPath, res) {
-  const stat = fs.statSync(tmpPath);
+  // Always convert to mp3 first to ensure compatibility with Whisper API
+  sendProgress(res, { phase: "converting", percent: -1, message: "Converting to MP3..." });
+  const mp3Path = await convertToMp3(tmpPath);
+  sendProgress(res, { phase: "converting", percent: 100, message: "Conversion complete" });
+
+  const stat = fs.statSync(mp3Path);
   const sizeBytes = stat.size;
   const MAX = 24 * 1024 * 1024;
 
   if (sizeBytes <= MAX) {
-    return { mode: "direct", files: [tmpPath], cleanup: [] };
+    return { mode: "converted", files: [mp3Path], cleanup: [mp3Path] };
   }
 
   // Get duration for progress calculation
   sendProgress(res, { phase: "analyzing", message: "Analyzing audio file..." });
-  const duration = await getAudioDuration(tmpPath);
+  const duration = await getAudioDuration(mp3Path);
   const sizeMB = (sizeBytes / (1024 * 1024)).toFixed(0);
 
-  // Try compressing first
+  // Try compressing further
   sendProgress(res, { phase: "compressing", percent: 0, message: `Compressing ${sizeMB} MB file...` });
 
   let lastPct = -1;
-  const compressed = await compressAudio(tmpPath, duration, (pct) => {
+  const compressed = await compressAudio(mp3Path, duration, (pct) => {
     if (pct !== lastPct) {
       lastPct = pct;
       sendProgress(res, { phase: "compressing", percent: pct, message: `Compressing audio... ${pct}%` });
@@ -274,6 +267,7 @@ async function prepareAudio(tmpPath, res) {
 
   const compressedSize = fs.statSync(compressed).size;
   if (compressedSize <= MAX) {
+    cleanup(mp3Path);
     return { mode: "compress", files: [compressed], cleanup: [compressed] };
   }
 
@@ -282,7 +276,7 @@ async function prepareAudio(tmpPath, res) {
   cleanup(compressed);
 
   lastPct = -1;
-  const { chunkDir, files } = await splitAudio(tmpPath, duration, (pct) => {
+  const { chunkDir, files } = await splitAudio(mp3Path, duration, (pct) => {
     if (pct !== lastPct) {
       lastPct = pct;
       sendProgress(res, { phase: "splitting", percent: pct, message: `Splitting audio... ${pct}%` });
@@ -290,6 +284,7 @@ async function prepareAudio(tmpPath, res) {
   });
   sendProgress(res, { phase: "splitting", percent: 100, message: `Split into ${files.length} chunks` });
 
+  cleanup(mp3Path);
   return { mode: "chunk", files, chunkDir, cleanup: [] };
 }
 
@@ -305,7 +300,6 @@ app.post("/api/transcribe", upload.single("audio"), async (req, res) => {
 
   const tmpPath = req.file.path;
   const originalName = req.file.originalname || "recording";
-  const mimetype = req.file.mimetype;
   let prepared = null;
 
   try {
@@ -317,7 +311,7 @@ app.post("/api/transcribe", upload.single("audio"), async (req, res) => {
 
     if (totalChunks === 1) {
       sendProgress(res, { phase: "transcribing", percent: 0, message: "Sending to Whisper API...", chunk: 1, totalChunks: 1 });
-      finalText = await transcribeFile(prepared.files[0], "text", language, prompt, originalName, mimetype);
+      finalText = await transcribeFile(prepared.files[0], "text", language, prompt);
       sendProgress(res, { phase: "transcribing", percent: 100, message: "Done", chunk: 1, totalChunks: 1 });
     } else {
       const texts = [];
@@ -325,7 +319,7 @@ app.post("/api/transcribe", upload.single("audio"), async (req, res) => {
       for (let i = 0; i < totalChunks; i++) {
         const pct = Math.round((i / totalChunks) * 100);
         sendProgress(res, { phase: "transcribing", percent: pct, message: `Transcribing chunk ${i + 1} of ${totalChunks}...`, chunk: i + 1, totalChunks });
-        const text = await transcribeFile(prepared.files[i], "text", language, rollingPrompt || undefined, originalName, mimetype);
+        const text = await transcribeFile(prepared.files[i], "text", language, rollingPrompt || undefined);
         texts.push(text);
         const trimmed = String(text).trim();
         rollingPrompt = trimmed.slice(-200);
@@ -370,7 +364,6 @@ app.post("/api/transcribe-verbose", upload.single("audio"), async (req, res) => 
 
   const tmpPath = req.file.path;
   const originalName = req.file.originalname || "recording";
-  const mimetype = req.file.mimetype;
   let prepared = null;
 
   try {
@@ -381,7 +374,7 @@ app.post("/api/transcribe-verbose", upload.single("audio"), async (req, res) => 
 
     if (totalChunks === 1) {
       sendProgress(res, { phase: "transcribing", percent: 0, message: "Sending to Whisper API (verbose)...", chunk: 1, totalChunks: 1 });
-      const result = await transcribeFile(prepared.files[0], "verbose_json", language, prompt, originalName, mimetype);
+      const result = await transcribeFile(prepared.files[0], "verbose_json", language, prompt);
       sendProgress(res, { phase: "transcribing", percent: 100 });
       sendProgress(res, {
         phase: "done",
@@ -398,7 +391,7 @@ app.post("/api/transcribe-verbose", upload.single("audio"), async (req, res) => 
       for (let i = 0; i < totalChunks; i++) {
         const pct = Math.round((i / totalChunks) * 100);
         sendProgress(res, { phase: "transcribing", percent: pct, message: `Transcribing chunk ${i + 1} of ${totalChunks} (verbose)...`, chunk: i + 1, totalChunks });
-        const result = await transcribeFile(prepared.files[i], "verbose_json", language, rollingPrompt || undefined, originalName, mimetype);
+        const result = await transcribeFile(prepared.files[i], "verbose_json", language, rollingPrompt || undefined);
 
         if (!detectedLang && result.language) detectedLang = result.language;
         const chunkDuration = result.duration || 0;
