@@ -306,9 +306,6 @@ app.post("/api/transcribe", upload.single("audio"), async (req, res) => {
   const tmpPath = req.file.path;
   const originalName = req.file.originalname || "recording";
   const mimetype = req.file.mimetype;
-  console.log("UPLOAD DEBUG:", { originalName, mimetype, tmpPath, size: req.file.size });
-  const ext = resolveAudioExt(tmpPath, originalName, mimetype);
-  console.log("RESOLVED EXT:", ext);
   let prepared = null;
 
   try {
