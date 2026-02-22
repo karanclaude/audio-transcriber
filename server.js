@@ -79,7 +79,8 @@ app.delete("/api/history/:id", (req, res) => {
 const ALLOWED_MIMES = [
   "audio/mpeg", "audio/mp3", "audio/wav", "audio/wave", "audio/x-wav",
   "audio/m4a", "audio/x-m4a", "audio/mp4", "audio/webm",
-  "video/mp4", "video/webm",
+  "audio/flac", "audio/x-flac", "audio/ogg", "audio/oga",
+  "video/mp4", "video/webm", "video/ogg",
 ];
 
 const upload = multer({
@@ -209,10 +210,17 @@ function splitAudio(inputPath, totalDuration, onProgress, chunkSeconds = 600) {
 }
 
 // --- Transcribe a single file ---
+function getAudioExtension(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  if ([".mp3", ".wav", ".m4a", ".mp4", ".webm", ".flac", ".ogg", ".oga", ".mpeg", ".mpga"].includes(ext)) return ext;
+  return ".mp3";
+}
+
 async function transcribeFile(filePath, format, language, prompt) {
+  const ext = getAudioExtension(filePath);
   const params = {
     model: "whisper-1",
-    file: await OpenAI.toFile(fs.createReadStream(filePath), "audio.mp3"),
+    file: await OpenAI.toFile(fs.createReadStream(filePath), "audio" + ext),
     response_format: format,
   };
   if (language) params.language = language;
