@@ -210,14 +210,31 @@ function splitAudio(inputPath, totalDuration, onProgress, chunkSeconds = 600) {
 }
 
 // --- Transcribe a single file ---
-function getAudioExtension(filePath) {
+const MIME_TO_EXT = {
+  "audio/mpeg": ".mp3", "audio/mp3": ".mp3", "audio/wav": ".wav",
+  "audio/wave": ".wav", "audio/x-wav": ".wav", "audio/m4a": ".m4a",
+  "audio/x-m4a": ".m4a", "audio/mp4": ".mp4", "audio/webm": ".webm",
+  "audio/flac": ".flac", "audio/x-flac": ".flac", "audio/ogg": ".ogg",
+  "audio/oga": ".oga", "video/mp4": ".mp4", "video/webm": ".webm",
+  "video/ogg": ".ogg",
+};
+
+function resolveAudioExt(filePath, originalName, mimetype) {
+  // Try original filename extension first
+  if (originalName) {
+    const ext = path.extname(originalName).toLowerCase();
+    if ([".mp3", ".wav", ".m4a", ".mp4", ".webm", ".flac", ".ogg", ".oga", ".mpeg", ".mpga"].includes(ext)) return ext;
+  }
+  // Fall back to mimetype
+  if (mimetype && MIME_TO_EXT[mimetype]) return MIME_TO_EXT[mimetype];
+  // Fall back to file path extension
   const ext = path.extname(filePath).toLowerCase();
   if ([".mp3", ".wav", ".m4a", ".mp4", ".webm", ".flac", ".ogg", ".oga", ".mpeg", ".mpga"].includes(ext)) return ext;
   return ".mp3";
 }
 
-async function transcribeFile(filePath, format, language, prompt) {
-  const ext = getAudioExtension(filePath);
+async function transcribeFile(filePath, format, language, prompt, originalName, mimetype) {
+  const ext = resolveAudioExt(filePath, originalName, mimetype);
   const params = {
     model: "whisper-1",
     file: await OpenAI.toFile(fs.createReadStream(filePath), "audio" + ext),
@@ -288,6 +305,7 @@ app.post("/api/transcribe", upload.single("audio"), async (req, res) => {
 
   const tmpPath = req.file.path;
   const originalName = req.file.originalname || "recording";
+  const mimetype = req.file.mimetype;
   let prepared = null;
 
   try {
@@ -299,7 +317,7 @@ app.post("/api/transcribe", upload.single("audio"), async (req, res) => {
 
     if (totalChunks === 1) {
       sendProgress(res, { phase: "transcribing", percent: 0, message: "Sending to Whisper API...", chunk: 1, totalChunks: 1 });
-      finalText = await transcribeFile(prepared.files[0], "text", language, prompt);
+      finalText = await transcribeFile(prepared.files[0], "text", language, prompt, originalName, mimetype);
       sendProgress(res, { phase: "transcribing", percent: 100, message: "Done", chunk: 1, totalChunks: 1 });
     } else {
       const texts = [];
@@ -307,7 +325,7 @@ app.post("/api/transcribe", upload.single("audio"), async (req, res) => {
       for (let i = 0; i < totalChunks; i++) {
         const pct = Math.round((i / totalChunks) * 100);
         sendProgress(res, { phase: "transcribing", percent: pct, message: `Transcribing chunk ${i + 1} of ${totalChunks}...`, chunk: i + 1, totalChunks });
-        const text = await transcribeFile(prepared.files[i], "text", language, rollingPrompt || undefined);
+        const text = await transcribeFile(prepared.files[i], "text", language, rollingPrompt || undefined, originalName, mimetype);
         texts.push(text);
         const trimmed = String(text).trim();
         rollingPrompt = trimmed.slice(-200);
@@ -351,6 +369,8 @@ app.post("/api/transcribe-verbose", upload.single("audio"), async (req, res) => 
   res.setHeader("X-Accel-Buffering", "no");
 
   const tmpPath = req.file.path;
+  const originalName = req.file.originalname || "recording";
+  const mimetype = req.file.mimetype;
   let prepared = null;
 
   try {
@@ -361,7 +381,7 @@ app.post("/api/transcribe-verbose", upload.single("audio"), async (req, res) => 
 
     if (totalChunks === 1) {
       sendProgress(res, { phase: "transcribing", percent: 0, message: "Sending to Whisper API (verbose)...", chunk: 1, totalChunks: 1 });
-      const result = await transcribeFile(prepared.files[0], "verbose_json", language, prompt);
+      const result = await transcribeFile(prepared.files[0], "verbose_json", language, prompt, originalName, mimetype);
       sendProgress(res, { phase: "transcribing", percent: 100 });
       sendProgress(res, {
         phase: "done",
@@ -378,7 +398,7 @@ app.post("/api/transcribe-verbose", upload.single("audio"), async (req, res) => 
       for (let i = 0; i < totalChunks; i++) {
         const pct = Math.round((i / totalChunks) * 100);
         sendProgress(res, { phase: "transcribing", percent: pct, message: `Transcribing chunk ${i + 1} of ${totalChunks} (verbose)...`, chunk: i + 1, totalChunks });
-        const result = await transcribeFile(prepared.files[i], "verbose_json", language, rollingPrompt || undefined);
+        const result = await transcribeFile(prepared.files[i], "verbose_json", language, rollingPrompt || undefined, originalName, mimetype);
 
         if (!detectedLang && result.language) detectedLang = result.language;
         const chunkDuration = result.duration || 0;
