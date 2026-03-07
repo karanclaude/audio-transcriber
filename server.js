@@ -140,6 +140,7 @@ function extractGDriveFileId(url) {
 function downloadYouTubeAudio(url, outputDir, onProgress) {
   return new Promise((resolve, reject) => {
     const outputTemplate = path.join(outputDir, "yt_%(id)s.%(ext)s");
+    const cookiesPath = path.join(__dirname, "yt_cookies.txt");
     const args = [
       "--no-playlist",
       "-x",
@@ -149,8 +150,12 @@ function downloadYouTubeAudio(url, outputDir, onProgress) {
       "--print", "after_move:filepath",
       "--progress",
       "--newline",
-      url,
     ];
+    // Use cookies file if it exists (needed for YouTube bot detection)
+    if (fs.existsSync(cookiesPath)) {
+      args.push("--cookies", cookiesPath);
+    }
+    args.push(url);
 
     const proc = spawn("yt-dlp", args, { stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
