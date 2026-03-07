@@ -95,6 +95,55 @@
     .tab-panel { display: none; }
     .tab-panel.active { display: block; }
 
+    /* --- URL input --- */
+    .url-input-area { padding: 1rem 0; }
+    .url-label { display: block; font-weight: 600; margin-bottom: 0.5rem; font-size: 0.95rem; }
+    .url-field { display: flex; gap: 0.5rem; }
+    .url-field input {
+      flex: 1;
+      padding: 0.75rem 1rem;
+      background: var(--surface-2);
+      border: 2px solid transparent;
+      border-radius: var(--radius);
+      color: var(--text);
+      font-family: inherit;
+      font-size: 0.95rem;
+      transition: border-color 0.25s;
+    }
+    .url-field input:focus { outline: none; border-color: var(--accent); }
+    .url-paste-btn {
+      padding: 0.75rem 1.2rem;
+      background: var(--surface-2);
+      border: 2px solid transparent;
+      border-radius: var(--radius);
+      color: var(--accent);
+      font-family: inherit;
+      font-weight: 600;
+      font-size: 0.9rem;
+      cursor: pointer;
+      transition: all 0.25s;
+      white-space: nowrap;
+    }
+    .url-paste-btn:hover { background: var(--accent); color: var(--bg); }
+    .url-hint { font-size: 0.8rem; color: var(--text-dim); margin-top: 0.5rem; }
+    .url-preview {
+      margin-top: 0.75rem;
+      font-size: 0.85rem;
+      font-weight: 600;
+      display: none;
+    }
+    .url-preview.visible { display: flex; align-items: center; gap: 0.5rem; }
+    .url-preview .badge {
+      padding: 0.25rem 0.7rem;
+      border-radius: 1rem;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .url-preview .badge.youtube { background: #ff000022; color: #ff4444; }
+    .url-preview .badge.gdrive { background: #00aa0022; color: #44bb44; }
+    .url-preview .badge.invalid { background: #ff880022; color: #ff8844; }
+
     /* --- Drop zone --- */
     .dropzone {
       border: 2px dashed var(--border);
@@ -527,6 +576,7 @@
     <div class="tabs">
       <button class="tab-btn active" data-tab="upload">Upload File</button>
       <button class="tab-btn" data-tab="record">Record Audio</button>
+      <button class="tab-btn" data-tab="url">Paste Link</button>
     </div>
 
     <!-- Upload panel -->
@@ -550,6 +600,19 @@
         <div class="rec-timer" id="recTimer">00:00</div>
         <div class="waveform" id="waveform"></div>
         <p class="rec-hint" id="recHint">Click to start recording</p>
+      </div>
+    </div>
+
+    <!-- URL panel -->
+    <div id="tab-url" class="tab-panel">
+      <div class="url-input-area">
+        <label for="urlInput" class="url-label">YouTube or Google Drive URL</label>
+        <div class="url-field">
+          <input type="url" id="urlInput" placeholder="https://youtube.com/watch?v=... or Google Drive link" autocomplete="off">
+          <button class="url-paste-btn" id="pasteBtn" title="Paste from clipboard">Paste</button>
+        </div>
+        <p class="url-hint">Supports YouTube, youtu.be, and Google Drive shared files</p>
+        <div class="url-preview" id="urlPreview"></div>
       </div>
     </div>
 
@@ -631,6 +694,9 @@
     const recTimer = $("#recTimer");
     const recHint = $("#recHint");
     const waveformEl = $("#waveform");
+    const urlInput = $("#urlInput");
+    const pasteBtn = $("#pasteBtn");
+    const urlPreview = $("#urlPreview");
     const langSelect = $("#langSelect");
     const promptInput = $("#promptInput");
     const transcribeBtn = $("#transcribeBtn");
@@ -675,6 +741,54 @@
       }
       if (message) progressPhase.textContent = message;
     }
+
+    // --- URL state ---
+    let urlSource = null; // { type: "youtube"|"gdrive", url: string }
+
+    function detectUrlTypeClient(url) {
+      try {
+        const u = new URL(url);
+        const host = u.hostname.replace("www.", "");
+        if (["youtube.com", "youtu.be", "m.youtube.com", "music.youtube.com"].includes(host)) return "youtube";
+        if (["drive.google.com", "docs.google.com"].includes(host)) return "gdrive";
+      } catch {}
+      return null;
+    }
+
+    urlInput.addEventListener("input", () => {
+      const val = urlInput.value.trim();
+      if (!val) {
+        urlPreview.classList.remove("visible");
+        urlSource = null;
+        updateTranscribeBtn();
+        return;
+      }
+      const type = detectUrlTypeClient(val);
+      if (type === "youtube") {
+        urlPreview.innerHTML = '<span class="badge youtube">YouTube</span> Ready to transcribe';
+        urlPreview.classList.add("visible");
+        urlSource = { type, url: val };
+      } else if (type === "gdrive") {
+        urlPreview.innerHTML = '<span class="badge gdrive">Google Drive</span> Ready to transcribe';
+        urlPreview.classList.add("visible");
+        urlSource = { type, url: val };
+      } else {
+        urlPreview.innerHTML = '<span class="badge invalid">Invalid</span> Enter a YouTube or Google Drive URL';
+        urlPreview.classList.add("visible");
+        urlSource = null;
+      }
+      updateTranscribeBtn();
+    });
+
+    pasteBtn.addEventListener("click", async () => {
+      try {
+        const text = await navigator.clipboard.readText();
+        urlInput.value = text;
+        urlInput.dispatchEvent(new Event("input"));
+      } catch {
+        toast("Could not read clipboard. Try Ctrl+V instead.", "error");
+      }
+    });
 
     // --- Tabs ---
     document.querySelectorAll(".tab-btn").forEach((btn) => {
@@ -832,7 +946,13 @@
 
     // --- Transcribe ---
     function updateTranscribeBtn() {
-      const hasSource = selectedFile || recordedBlob;
+      const activeTab = document.querySelector(".tab-btn.active")?.dataset.tab;
+      let hasSource = false;
+      if (activeTab === "url") {
+        hasSource = !!urlSource;
+      } else {
+        hasSource = !!(selectedFile || recordedBlob);
+      }
       transcribeBtn.disabled = !hasSource;
     }
 
@@ -979,6 +1099,7 @@
 
     function phaseLabel(phase) {
       const labels = {
+        downloading: "Downloading",
         converting: "Converting",
         analyzing: "Analyzing",
         compressing: "Compressing",
@@ -988,9 +1109,60 @@
       return labels[phase] || phase;
     }
 
+    // --- Stream NDJSON for URL transcription (JSON body, not FormData) ---
+    async function streamTranscribeUrl(endpoint, body) {
+      return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", endpoint);
+        xhr.setRequestHeader("Content-Type", "application/json");
+        let processedLength = 0;
+        let lastResult = null;
+        let lastError = null;
+
+        function parseNdjsonLines(text) {
+          const lines = text.split("\n").filter(Boolean);
+          for (const line of lines) {
+            try {
+              const evt = JSON.parse(line);
+              if (evt.phase === "done") {
+                lastResult = evt.result;
+              } else if (evt.phase === "error") {
+                lastError = evt.error;
+              } else if (evt.percent !== undefined) {
+                const label = phaseLabel(evt.phase);
+                setProgress(evt.percent, evt.message || `${label} ${evt.percent}%`);
+              } else if (evt.message) {
+                setProgress(-1, evt.message);
+              }
+            } catch {}
+          }
+        }
+
+        xhr.onreadystatechange = () => {
+          if (xhr.readyState >= 3 && xhr.responseText) {
+            const newText = xhr.responseText.substring(processedLength);
+            processedLength = xhr.responseText.length;
+            if (newText) parseNdjsonLines(newText);
+          }
+          if (xhr.readyState === 4) {
+            if (!lastResult && !lastError) parseNdjsonLines(xhr.responseText);
+            if (lastError) reject(new Error(lastError));
+            else if (lastResult) resolve(lastResult);
+            else reject(new Error("No result received from server"));
+          }
+        };
+
+        xhr.addEventListener("error", () => reject(new Error("Network error")));
+        xhr.addEventListener("abort", () => reject(new Error("Aborted")));
+        xhr.send(JSON.stringify(body));
+      });
+    }
+
     transcribeBtn.addEventListener("click", async () => {
-      const audioSource = selectedFile || recordedBlob;
-      if (!audioSource) return;
+      const activeTab = document.querySelector(".tab-btn.active")?.dataset.tab;
+      const isUrlMode = activeTab === "url" && urlSource;
+      const audioSource = isUrlMode ? null : (selectedFile || recordedBlob);
+      if (!isUrlMode && !audioSource) return;
 
       const lang = langSelect.value;
       const prompt = promptInput.value.trim();
@@ -1000,21 +1172,32 @@
       outputMeta.classList.remove("visible");
       verboseData = null;
       showProgress();
-      setProgress(0, "Starting upload...");
 
       try {
-        // Fire both requests: text + verbose (for SRT timestamps)
-        const textFd = buildFormData(audioSource, lang, prompt);
-        const verboseFd = buildFormData(audioSource, lang, prompt);
+        let textResult, verboseResult;
 
-        // Primary request with progress tracking
-        const textPromise = streamTranscribe("/api/transcribe", textFd);
+        if (isUrlMode) {
+          setProgress(-1, "Starting download...");
+          const body = { url: urlSource.url };
+          if (lang) body.language = lang;
+          if (prompt) body.prompt = prompt;
 
-        // Verbose request in background (no progress UI, just for SRT data)
-        const verbosePromise = streamTranscribe("/api/transcribe-verbose", verboseFd)
-          .catch(() => null); // don't fail if verbose fails
+          const textPromise = streamTranscribeUrl("/api/transcribe-url", body);
+          const verbosePromise = streamTranscribeUrl("/api/transcribe-url-verbose", body)
+            .catch(() => null);
 
-        const [textResult, verboseResult] = await Promise.all([textPromise, verbosePromise]);
+          [textResult, verboseResult] = await Promise.all([textPromise, verbosePromise]);
+        } else {
+          setProgress(0, "Starting upload...");
+          const textFd = buildFormData(audioSource, lang, prompt);
+          const verboseFd = buildFormData(audioSource, lang, prompt);
+
+          const textPromise = streamTranscribe("/api/transcribe", textFd);
+          const verbosePromise = streamTranscribe("/api/transcribe-verbose", verboseFd)
+            .catch(() => null);
+
+          [textResult, verboseResult] = await Promise.all([textPromise, verbosePromise]);
+        }
 
         outputText.textContent = textResult.text;
 

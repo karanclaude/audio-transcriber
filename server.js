@@ -4,6 +4,8 @@ const multer = require("multer");
 const cors = require("cors");
 const path = require("path");
 const fs = require("fs");
+const https = require("https");
+const http = require("http");
 const { spawn, execFile } = require("child_process");
 const { promisify } = require("util");
 const OpenAI = require("openai");
@@ -102,6 +104,193 @@ function cleanupDir(dirPath) {
     for (const f of files) fs.unlinkSync(path.join(dirPath, f));
     fs.rmdirSync(dirPath);
   } catch {}
+}
+
+// --- URL detection helpers ---
+function detectUrlType(url) {
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.replace("www.", "");
+    if (["youtube.com", "youtu.be", "m.youtube.com", "music.youtube.com"].includes(host)) {
+      return "youtube";
+    }
+    if (host === "drive.google.com") {
+      return "gdrive";
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function extractGDriveFileId(url) {
+  const patterns = [
+    /\/file\/d\/([a-zA-Z0-9_-]+)/,
+    /[?&]id=([a-zA-Z0-9_-]+)/,
+    /\/d\/([a-zA-Z0-9_-]+)/,
+  ];
+  for (const re of patterns) {
+    const m = url.match(re);
+    if (m) return m[1];
+  }
+  return null;
+}
+
+// --- Download YouTube audio via yt-dlp ---
+function downloadYouTubeAudio(url, outputDir, onProgress) {
+  return new Promise((resolve, reject) => {
+    const outputTemplate = path.join(outputDir, "yt_%(id)s.%(ext)s");
+    const args = [
+      "--no-playlist",
+      "-x",
+      "--audio-format", "mp3",
+      "--audio-quality", "5",
+      "-o", outputTemplate,
+      "--print", "after_move:filepath",
+      "--no-warnings",
+      "--progress",
+      url,
+    ];
+
+    const proc = spawn("yt-dlp", args, { stdio: ["pipe", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    let lastPct = -1;
+
+    proc.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+
+    proc.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+      const match = stderr.match(/\[download\]\s+([\d.]+)%/g);
+      if (match) {
+        const last = match[match.length - 1];
+        const m = last.match(/([\d.]+)%/);
+        if (m) {
+          const pct = Math.round(parseFloat(m[1]));
+          if (pct !== lastPct) {
+            lastPct = pct;
+            onProgress(pct);
+          }
+        }
+      }
+      if (stderr.length > 4000) stderr = stderr.slice(-2000);
+    });
+
+    proc.on("close", (code) => {
+      if (code !== 0) {
+        const errMsg = stderr.includes("Video unavailable")
+          ? "Video is unavailable or private"
+          : stderr.includes("Sign in")
+          ? "Video requires sign-in (age-restricted or private)"
+          : `yt-dlp failed: ${stderr.slice(-200)}`;
+        return reject(new Error(errMsg));
+      }
+      const filePath = stdout.trim().split("\n").pop().trim();
+      if (!filePath || !fs.existsSync(filePath)) {
+        return reject(new Error("yt-dlp did not produce an output file"));
+      }
+      resolve(filePath);
+    });
+
+    proc.on("error", (err) => {
+      if (err.code === "ENOENT") {
+        reject(new Error("yt-dlp is not installed. Install it with: brew install yt-dlp"));
+      } else {
+        reject(err);
+      }
+    });
+  });
+}
+
+// --- Download Google Drive shared file ---
+function downloadGDriveFile(fileId, outputDir, onProgress) {
+  return new Promise((resolve, reject) => {
+    const downloadUrl = `https://drive.google.com/uc?export=download&id=${fileId}`;
+    const outputBase = path.join(outputDir, `gdrive_${fileId}`);
+
+    function followRedirects(url, redirectCount = 0) {
+      if (redirectCount > 5) return reject(new Error("Too many redirects"));
+
+      const client = url.startsWith("https") ? https : http;
+      client.get(url, { headers: { "User-Agent": "Mozilla/5.0" } }, (response) => {
+        if ([301, 302, 303, 307, 308].includes(response.statusCode)) {
+          const location = response.headers.location;
+          if (!location) return reject(new Error("Redirect with no location"));
+          response.destroy();
+          return followRedirects(location, redirectCount + 1);
+        }
+
+        // Google Drive virus scan page for large files
+        if (response.statusCode === 200 && response.headers["content-type"]?.includes("text/html")) {
+          response.destroy();
+          if (redirectCount === 0) {
+            return followRedirects(
+              `https://drive.google.com/uc?export=download&id=${fileId}&confirm=t`,
+              redirectCount + 1
+            );
+          }
+          return reject(new Error("Cannot download this file. Make sure it is shared publicly and is an audio/video file."));
+        }
+
+        if (response.statusCode !== 200) {
+          return reject(new Error(`Google Drive returned status ${response.statusCode}`));
+        }
+
+        // Determine file extension
+        const disposition = response.headers["content-disposition"] || "";
+        const contentType = response.headers["content-type"] || "";
+        let ext = ".mp3";
+        const nameMatch = disposition.match(/filename="?([^";\n]+)"?/);
+        if (nameMatch) {
+          ext = path.extname(nameMatch[1]) || ext;
+        } else if (contentType.includes("mp4")) {
+          ext = ".mp4";
+        } else if (contentType.includes("wav")) {
+          ext = ".wav";
+        } else if (contentType.includes("webm")) {
+          ext = ".webm";
+        } else if (contentType.includes("ogg")) {
+          ext = ".ogg";
+        }
+
+        const finalPath = outputBase + ext;
+        const totalBytes = parseInt(response.headers["content-length"], 10) || 0;
+        let downloaded = 0;
+        let lastPct = -1;
+
+        const file = fs.createWriteStream(finalPath);
+        response.on("data", (chunk) => {
+          downloaded += chunk.length;
+          if (totalBytes > 0) {
+            const pct = Math.min(99, Math.round((downloaded / totalBytes) * 100));
+            if (pct !== lastPct) {
+              lastPct = pct;
+              onProgress(pct);
+            }
+          }
+        });
+
+        response.pipe(file);
+        file.on("finish", () => {
+          file.close();
+          const stat = fs.statSync(finalPath);
+          if (stat.size < 1000) {
+            fs.unlinkSync(finalPath);
+            return reject(new Error("Downloaded file is too small. Make sure the link points to an audio/video file and is shared publicly."));
+          }
+          resolve(finalPath);
+        });
+        file.on("error", (err) => {
+          fs.unlink(finalPath, () => {});
+          reject(err);
+        });
+      }).on("error", reject);
+    }
+
+    followRedirects(downloadUrl);
+  });
 }
 
 // --- Send a progress event as NDJSON line ---
@@ -423,6 +612,158 @@ app.post("/api/transcribe-verbose", upload.single("audio"), async (req, res) => 
     cleanup(tmpPath, ...(prepared?.cleanup || []));
     if (prepared?.chunkDir) cleanupDir(prepared.chunkDir);
   }
+});
+
+// --- Shared URL transcription handler ---
+async function handleUrlTranscription(req, res, format) {
+  const { url, language, prompt } = req.body;
+
+  if (!url) {
+    return res.status(400).json({ error: "No URL provided." });
+  }
+
+  const urlType = detectUrlType(url);
+  if (!urlType) {
+    return res.status(400).json({ error: "Unsupported URL. Provide a YouTube or Google Drive link." });
+  }
+
+  res.setHeader("Content-Type", "application/x-ndjson");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("X-Accel-Buffering", "no");
+
+  const tmpDir = path.join(__dirname, "tmp");
+  fs.mkdirSync(tmpDir, { recursive: true });
+  let downloadedPath = null;
+  let prepared = null;
+  let sourceLabel = url;
+
+  try {
+    // Phase 1: Download
+    if (urlType === "youtube") {
+      sendProgress(res, { phase: "downloading", percent: 0, message: "Downloading from YouTube..." });
+      downloadedPath = await downloadYouTubeAudio(url, tmpDir, (pct) => {
+        sendProgress(res, { phase: "downloading", percent: pct, message: `Downloading... ${pct}%` });
+      });
+      sendProgress(res, { phase: "downloading", percent: 100, message: "Download complete" });
+      try {
+        const { stdout } = await execFileAsync("yt-dlp", ["--get-title", "--no-warnings", url]);
+        sourceLabel = stdout.trim() || url;
+      } catch {}
+    } else if (urlType === "gdrive") {
+      const fileId = extractGDriveFileId(url);
+      if (!fileId) {
+        sendProgress(res, { phase: "error", error: "Could not parse Google Drive file ID from URL." });
+        return res.end();
+      }
+      sendProgress(res, { phase: "downloading", percent: 0, message: "Downloading from Google Drive..." });
+      downloadedPath = await downloadGDriveFile(fileId, tmpDir, (pct) => {
+        sendProgress(res, { phase: "downloading", percent: pct, message: `Downloading... ${pct}%` });
+      });
+      sendProgress(res, { phase: "downloading", percent: 100, message: "Download complete" });
+    }
+
+    // Phase 2: Reuse existing pipeline
+    prepared = await prepareAudio(downloadedPath, res);
+    const totalChunks = prepared.files.length;
+    const lang = language || undefined;
+    const ctx = prompt || undefined;
+
+    if (format === "text") {
+      let finalText = "";
+
+      if (totalChunks === 1) {
+        sendProgress(res, { phase: "transcribing", percent: 0, message: "Sending to Whisper API...", chunk: 1, totalChunks: 1 });
+        finalText = await transcribeFile(prepared.files[0], "text", lang, ctx);
+        sendProgress(res, { phase: "transcribing", percent: 100, message: "Done", chunk: 1, totalChunks: 1 });
+      } else {
+        const texts = [];
+        let rollingPrompt = ctx || "";
+        for (let i = 0; i < totalChunks; i++) {
+          const pct = Math.round((i / totalChunks) * 100);
+          sendProgress(res, { phase: "transcribing", percent: pct, message: `Transcribing chunk ${i + 1} of ${totalChunks}...`, chunk: i + 1, totalChunks });
+          const text = await transcribeFile(prepared.files[i], "text", lang, rollingPrompt || undefined);
+          texts.push(text);
+          rollingPrompt = String(text).trim().slice(-200);
+        }
+        sendProgress(res, { phase: "transcribing", percent: 100, message: "All chunks transcribed" });
+        finalText = texts.join(" ");
+      }
+
+      const historyEntry = {
+        id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+        filename: sourceLabel.slice(0, 80) + ".txt",
+        sourceFile: sourceLabel.slice(0, 120),
+        text: String(finalText),
+        language: lang || "auto",
+        chunks: totalChunks,
+        createdAt: new Date().toISOString(),
+      };
+      addToHistory(historyEntry);
+
+      sendProgress(res, { phase: "done", result: { text: finalText, chunks: totalChunks, historyId: historyEntry.id } });
+    } else {
+      // verbose format
+      if (totalChunks === 1) {
+        sendProgress(res, { phase: "transcribing", percent: 0, message: "Sending to Whisper API (verbose)...", chunk: 1, totalChunks: 1 });
+        const result = await transcribeFile(prepared.files[0], "verbose_json", lang, ctx);
+        sendProgress(res, { phase: "transcribing", percent: 100 });
+        sendProgress(res, {
+          phase: "done",
+          result: { text: result.text, language: result.language, duration: result.duration, segments: result.segments },
+        });
+      } else {
+        const allSegments = [];
+        const texts = [];
+        let timeOffset = 0;
+        let detectedLang = null;
+        let totalDuration = 0;
+        let rollingPrompt = ctx || "";
+
+        for (let i = 0; i < totalChunks; i++) {
+          const pct = Math.round((i / totalChunks) * 100);
+          sendProgress(res, { phase: "transcribing", percent: pct, message: `Transcribing chunk ${i + 1} of ${totalChunks} (verbose)...`, chunk: i + 1, totalChunks });
+          const result = await transcribeFile(prepared.files[i], "verbose_json", lang, rollingPrompt || undefined);
+
+          if (!detectedLang && result.language) detectedLang = result.language;
+          const chunkDuration = result.duration || 0;
+
+          if (result.segments) {
+            for (const seg of result.segments) {
+              allSegments.push({ ...seg, start: seg.start + timeOffset, end: seg.end + timeOffset });
+            }
+          }
+
+          texts.push(result.text);
+          timeOffset += chunkDuration;
+          totalDuration += chunkDuration;
+          rollingPrompt = String(result.text).trim().slice(-200);
+        }
+
+        sendProgress(res, { phase: "transcribing", percent: 100 });
+        sendProgress(res, {
+          phase: "done",
+          result: { text: texts.join(" "), language: detectedLang, duration: totalDuration, segments: allSegments, chunks: totalChunks },
+        });
+      }
+    }
+  } catch (err) {
+    console.error("URL transcription error:", err.message);
+    sendProgress(res, { phase: "error", error: err.message || "Transcription failed." });
+  } finally {
+    res.end();
+    cleanup(downloadedPath, ...(prepared?.cleanup || []));
+    if (prepared?.chunkDir) cleanupDir(prepared.chunkDir);
+  }
+}
+
+// --- POST /api/transcribe-url (text) ---
+app.post("/api/transcribe-url", (req, res) => {
+  handleUrlTranscription(req, res, "text");
+});
+
+// --- POST /api/transcribe-url-verbose ---
+app.post("/api/transcribe-url-verbose", (req, res) => {
+  handleUrlTranscription(req, res, "verbose");
 });
 
 // --- Multer error handler ---
