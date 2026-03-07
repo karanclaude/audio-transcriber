@@ -147,44 +147,46 @@ function downloadYouTubeAudio(url, outputDir, onProgress) {
       "--audio-quality", "5",
       "-o", outputTemplate,
       "--print", "after_move:filepath",
-      "--no-warnings",
       "--progress",
+      "--newline",
       url,
     ];
 
     const proc = spawn("yt-dlp", args, { stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
-    let stderr = "";
+    let allOutput = "";
     let lastPct = -1;
 
     proc.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
+      const text = chunk.toString();
+      stdout += text;
+      allOutput += text;
+      // yt-dlp progress lines: [download]  45.2% of ~5.00MiB ...
+      const match = text.match(/\[download\]\s+([\d.]+)%/);
+      if (match) {
+        const pct = Math.round(parseFloat(match[1]));
+        if (pct !== lastPct) { lastPct = pct; onProgress(pct); }
+      }
     });
 
     proc.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-      const match = stderr.match(/\[download\]\s+([\d.]+)%/g);
-      if (match) {
-        const last = match[match.length - 1];
-        const m = last.match(/([\d.]+)%/);
-        if (m) {
-          const pct = Math.round(parseFloat(m[1]));
-          if (pct !== lastPct) {
-            lastPct = pct;
-            onProgress(pct);
-          }
-        }
-      }
-      if (stderr.length > 4000) stderr = stderr.slice(-2000);
+      allOutput += chunk.toString();
+      if (allOutput.length > 8000) allOutput = allOutput.slice(-4000);
     });
 
     proc.on("close", (code) => {
       if (code !== 0) {
-        const errMsg = stderr.includes("Video unavailable")
-          ? "Video is unavailable or private"
-          : stderr.includes("Sign in")
-          ? "Video requires sign-in (age-restricted or private)"
-          : `yt-dlp failed: ${stderr.slice(-200)}`;
+        const lower = allOutput.toLowerCase();
+        let errMsg;
+        if (lower.includes("video unavailable") || lower.includes("this video is not available")) {
+          errMsg = "This video is unavailable or has been removed.";
+        } else if (lower.includes("private video") || lower.includes("sign in to confirm your age")) {
+          errMsg = "This video is private or age-restricted and cannot be downloaded.";
+        } else if (lower.includes("is not a valid url") || lower.includes("unsupported url")) {
+          errMsg = "Invalid YouTube URL. Please check the link.";
+        } else {
+          errMsg = `YouTube download failed: ${allOutput.trim().split("\n").pop().slice(-200)}`;
+        }
         return reject(new Error(errMsg));
       }
       const filePath = stdout.trim().split("\n").pop().trim();
@@ -196,7 +198,7 @@ function downloadYouTubeAudio(url, outputDir, onProgress) {
 
     proc.on("error", (err) => {
       if (err.code === "ENOENT") {
-        reject(new Error("yt-dlp is not installed. Install it with: brew install yt-dlp"));
+        reject(new Error("yt-dlp is not installed on the server."));
       } else {
         reject(err);
       }
@@ -205,54 +207,123 @@ function downloadYouTubeAudio(url, outputDir, onProgress) {
 }
 
 // --- Download Google Drive shared file ---
+// Uses yt-dlp which handles GDrive auth/cookies better than raw HTTP
 function downloadGDriveFile(fileId, outputDir, onProgress) {
+  const gdriveUrl = `https://drive.google.com/file/d/${fileId}/view`;
+  return downloadGDriveViaYtdlp(gdriveUrl, outputDir, onProgress)
+    .catch(() => downloadGDriveViaHttp(fileId, outputDir, onProgress));
+}
+
+function downloadGDriveViaYtdlp(url, outputDir, onProgress) {
   return new Promise((resolve, reject) => {
-    const downloadUrl = `https://drive.google.com/uc?export=download&id=${fileId}`;
+    const outputTemplate = path.join(outputDir, "gd_%(id)s.%(ext)s");
+    const args = [
+      "-x",
+      "--audio-format", "mp3",
+      "--audio-quality", "5",
+      "-o", outputTemplate,
+      "--print", "after_move:filepath",
+      "--no-warnings",
+      "--progress",
+      url,
+    ];
+
+    const proc = spawn("yt-dlp", args, { stdio: ["pipe", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    let lastPct = -1;
+
+    proc.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
+    proc.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+      const match = stderr.match(/\[download\]\s+([\d.]+)%/g);
+      if (match) {
+        const last = match[match.length - 1];
+        const m = last.match(/([\d.]+)%/);
+        if (m) {
+          const pct = Math.round(parseFloat(m[1]));
+          if (pct !== lastPct) { lastPct = pct; onProgress(pct); }
+        }
+      }
+      if (stderr.length > 4000) stderr = stderr.slice(-2000);
+    });
+
+    proc.on("close", (code) => {
+      if (code !== 0) return reject(new Error(`yt-dlp gdrive failed: ${stderr.slice(-200)}`));
+      const filePath = stdout.trim().split("\n").pop().trim();
+      if (!filePath || !fs.existsSync(filePath)) return reject(new Error("yt-dlp did not produce a file"));
+      resolve(filePath);
+    });
+    proc.on("error", (err) => reject(err));
+  });
+}
+
+function downloadGDriveViaHttp(fileId, outputDir, onProgress) {
+  return new Promise((resolve, reject) => {
+    // Use the newer usercontent endpoint with confirm=t to skip virus scan page
+    const downloadUrl = `https://drive.usercontent.google.com/download?id=${fileId}&export=download&confirm=t`;
     const outputBase = path.join(outputDir, `gdrive_${fileId}`);
 
     function followRedirects(url, redirectCount = 0) {
-      if (redirectCount > 5) return reject(new Error("Too many redirects"));
+      if (redirectCount > 10) return reject(new Error("Too many redirects"));
 
       const client = url.startsWith("https") ? https : http;
-      client.get(url, { headers: { "User-Agent": "Mozilla/5.0" } }, (response) => {
+      const headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      };
+
+      client.get(url, { headers }, (response) => {
         if ([301, 302, 303, 307, 308].includes(response.statusCode)) {
           const location = response.headers.location;
           if (!location) return reject(new Error("Redirect with no location"));
           response.destroy();
-          return followRedirects(location, redirectCount + 1);
+          const absUrl = location.startsWith("http") ? location : new URL(location, url).toString();
+          return followRedirects(absUrl, redirectCount + 1);
         }
 
-        // Google Drive virus scan page for large files
-        if (response.statusCode === 200 && response.headers["content-type"]?.includes("text/html")) {
-          response.destroy();
-          if (redirectCount === 0) {
-            return followRedirects(
-              `https://drive.google.com/uc?export=download&id=${fileId}&confirm=t`,
-              redirectCount + 1
-            );
-          }
-          return reject(new Error("Cannot download this file. Make sure it is shared publicly and is an audio/video file."));
+        // If we get HTML back, the file isn't publicly accessible or requires auth
+        const ct = response.headers["content-type"] || "";
+        if (response.statusCode === 200 && ct.includes("text/html")) {
+          // Consume the body to check if it's a download page
+          let body = "";
+          response.on("data", (c) => { body += c.toString(); if (body.length > 5000) response.destroy(); });
+          response.on("end", () => {
+            if (body.includes("download_warning") || body.includes("confirm=")) {
+              // Try to extract confirm token
+              const tokenMatch = body.match(/confirm=([a-zA-Z0-9_-]+)/);
+              if (tokenMatch && redirectCount < 3) {
+                return followRedirects(
+                  `https://drive.usercontent.google.com/download?id=${fileId}&export=download&confirm=${tokenMatch[1]}`,
+                  redirectCount + 1
+                );
+              }
+            }
+            return reject(new Error("Cannot download this file. Make sure the Google Drive link is set to 'Anyone with the link' sharing."));
+          });
+          return;
         }
 
         if (response.statusCode !== 200) {
+          response.destroy();
           return reject(new Error(`Google Drive returned status ${response.statusCode}`));
         }
 
-        // Determine file extension
+        // Determine file extension from headers
         const disposition = response.headers["content-disposition"] || "";
-        const contentType = response.headers["content-type"] || "";
-        let ext = ".mp3";
-        const nameMatch = disposition.match(/filename="?([^";\n]+)"?/);
+        let ext = ".mp4";
+        const nameMatch = disposition.match(/filename\*?="?(?:UTF-8'')?([^";\n]+)"?/i);
         if (nameMatch) {
-          ext = path.extname(nameMatch[1]) || ext;
-        } else if (contentType.includes("mp4")) {
-          ext = ".mp4";
-        } else if (contentType.includes("wav")) {
+          ext = path.extname(decodeURIComponent(nameMatch[1])) || ext;
+        } else if (ct.includes("audio/mpeg") || ct.includes("audio/mp3")) {
+          ext = ".mp3";
+        } else if (ct.includes("audio/wav")) {
           ext = ".wav";
-        } else if (contentType.includes("webm")) {
-          ext = ".webm";
-        } else if (contentType.includes("ogg")) {
+        } else if (ct.includes("audio/ogg")) {
           ext = ".ogg";
+        } else if (ct.includes("webm")) {
+          ext = ".webm";
+        } else if (ct.includes("audio/m4a") || ct.includes("audio/mp4")) {
+          ext = ".m4a";
         }
 
         const finalPath = outputBase + ext;
@@ -265,13 +336,9 @@ function downloadGDriveFile(fileId, outputDir, onProgress) {
           downloaded += chunk.length;
           if (totalBytes > 0) {
             const pct = Math.min(99, Math.round((downloaded / totalBytes) * 100));
-            if (pct !== lastPct) {
-              lastPct = pct;
-              onProgress(pct);
-            }
+            if (pct !== lastPct) { lastPct = pct; onProgress(pct); }
           }
         });
-
         response.pipe(file);
         file.on("finish", () => {
           file.close();
@@ -282,10 +349,7 @@ function downloadGDriveFile(fileId, outputDir, onProgress) {
           }
           resolve(finalPath);
         });
-        file.on("error", (err) => {
-          fs.unlink(finalPath, () => {});
-          reject(err);
-        });
+        file.on("error", (err) => { fs.unlink(finalPath, () => {}); reject(err); });
       }).on("error", reject);
     }
 
